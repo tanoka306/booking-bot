@@ -1,7 +1,7 @@
 """
 Телеграм-бот бронирования столов: Tanoka / Hit me baby
 Хостинг: Bothost (Python), работает через polling — ответы мгновенные.
-Без Google: все брони хранятся в Excel-файле, который бот держит
+Без Google: все брони хранятся в CSV-файле (открывается в Excel), который бот держит
 закреплённым в чате администратора и обновляет после каждой заявки.
 
 Сценарий гостя:
@@ -13,12 +13,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import io
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from datetime import timedelta, timezone
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
@@ -37,18 +38,17 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font
 
 # ================== НАСТРОЙКИ ==================
 # Задаются в панели Bothost → «Переменные окружения»
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")  # чат администратора (узнать: /myid)
-TIMEZONE = os.getenv("TIMEZONE", "Asia/Omsk")
+# Часовой пояс: Омск = UTC+6
+TZ = timezone(timedelta(hours=int(os.getenv("TZ_OFFSET", "6"))))
 
 BASE_DIR = Path(__file__).resolve().parent
 IMAGES_DIR = BASE_DIR / "images"
-FILE_NAME = "bookings.xlsx"
+FILE_NAME = "bookings.csv"
 
 # Заведения: текст под схемой и номера столов (поменяйте под свои схемы)
 VENUES = {
@@ -86,7 +86,7 @@ class Booking(StatesGroup):
 
 class BookingStore:
     """
-    Брони живут в памяти и в файле bookings.xlsx, закреплённом в чате администратора.
+    Брони живут в памяти и в файле bookings.csv, закреплённом в чате администратора.
     При перезапуске бот скачивает закреплённый файл и продолжает с того же места,
     поэтому данные не теряются даже на бесплатном тарифе Bothost.
     """
@@ -97,24 +97,15 @@ class BookingStore:
         self.lock = asyncio.Lock()
 
     def to_bytes(self) -> bytes:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Брони"
-        ws.append(HEADERS)
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-        for row in self.rows:
-            ws.append(row)
-        ws.freeze_panes = "A2"
-        widths = [17, 14, 22, 14, 24, 18, 18, 14]
-        for i, w in enumerate(widths):
-            ws.column_dimensions[chr(65 + i)].width = w
-        buf = io.BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
+        # CSV с разделителем «;» и BOM — Excel открывает его как таблицу с русским текстом
+        buf = io.StringIO()
+        w = csv.writer(buf, delimiter=";")
+        w.writerow(HEADERS)
+        w.writerows(self.rows)
+        return buf.getvalue().encode("utf-8-sig")
 
     def caption(self) -> str:
-        now = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y %H:%M")
+        now = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
         return f"📋 Таблица броней — {len(self.rows)} шт.\nОбновлено: {now}\n\nНе открепляйте это сообщение."
 
     async def load(self, bot: Bot) -> None:
@@ -131,12 +122,9 @@ class BookingStore:
             buf = io.BytesIO()
             await bot.download(pinned.document.file_id, destination=buf)
             buf.seek(0)
-            ws = load_workbook(buf).active
-            self.rows = [
-                ["" if v is None else str(v) for v in r]
-                for r in ws.iter_rows(min_row=2, values_only=True)
-                if any(v is not None for v in r)
-            ]
+            text = buf.getvalue().decode("utf-8-sig")
+            reader = list(csv.reader(io.StringIO(text), delimiter=";"))
+            self.rows = [r for r in reader[1:] if any(c.strip() for c in r)]
             self.message_id = pinned.message_id
             log.info("Загружено броней из Telegram: %s", len(self.rows))
         except Exception as e:
@@ -350,7 +338,7 @@ async def get_phone(message: Message, state: FSMContext):
     venue = VENUES[data["venue"]]["name"]
     user = message.from_user
     username = f"@{user.username}" if user and user.username else ""
-    created = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y %H:%M")
+    created = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
 
     await message.answer(
         f"Спасибо! Заявка на бронь в {venue} принята.\n"
