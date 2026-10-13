@@ -55,12 +55,12 @@ VENUES = {
     "tanoka": {
         "name": "Tanoka",
         "plan_text": "Схема зала Tanoka",
-        "tables": [str(i) for i in range(1, 11)],
+        "tables": [str(i) for i in range(1, 15)],  # столы 1–14
     },
     "hit": {
         "name": "Hit me baby",
         "plan_text": "Схема зала Hit me baby",
-        "tables": [str(i) for i in range(1, 11)],
+        "tables": [str(i) for i in range(1, 10)] + ["VIP Empire", "VIP Prime"],  # 1–9 + VIP
     },
 }
 
@@ -179,12 +179,22 @@ def venues_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def table_label(t: str) -> str:
+    """«5» → «стол №5», «VIP Empire» → «VIP Empire»."""
+    return f"стол №{t}" if t.isdigit() else t
+
+
 def tables_kb(venue_key: str) -> InlineKeyboardMarkup:
     tables = VENUES[venue_key]["tables"]
+    numbers = [t for t in tables if t.isdigit()]
+    others = [t for t in tables if not t.isdigit()]
     rows = [
-        [InlineKeyboardButton(text=f"№{t}", callback_data=f"table:{t}") for t in tables[i:i + 5]]
-        for i in range(0, len(tables), 5)
+        [InlineKeyboardButton(text=f"№{t}", callback_data=f"table:{t}") for t in numbers[i:i + 5]]
+        for i in range(0, len(numbers), 5)
     ]
+    # VIP-комнаты — отдельной строкой, широкими кнопками
+    if others:
+        rows.append([InlineKeyboardButton(text=f"⭐ {t}", callback_data=f"table:{t}") for t in others])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -297,7 +307,7 @@ async def choose_venue(callback: CallbackQuery, state: FSMContext):
 async def get_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text.strip())
     data = await state.get_data()
-    await message.answer("Выберите номер столика (номера указаны на схеме зала)",
+    await message.answer("Выберите стол (номера указаны на схеме зала)",
                          reply_markup=tables_kb(data["venue"]))
     await state.set_state(Booking.table)
 
@@ -305,7 +315,7 @@ async def get_name(message: Message, state: FSMContext):
 # Шаг 3: столик (кнопкой или текстом) → дата и время
 async def _set_table(message: Message, state: FSMContext, table: str):
     await state.update_data(table=table)
-    await message.answer(f"Столик №{table} выбран.\n\nДата и время визита")
+    await message.answer(f"Выбрано: {table_label(table)}.\n\nДата и время визита")
     await state.set_state(Booking.datetime)
 
 
@@ -350,7 +360,7 @@ async def get_phone(message: Message, state: FSMContext):
         "🔔 Новая бронь\n\n"
         f"Заведение: {venue}\n"
         f"Имя: {data['name']}\n"
-        f"Столик: №{data['table']}\n"
+        f"Стол: {table_label(data['table'])}\n"
         f"Дата и время: {data['datetime']}\n"
         f"Телефон: {phone}\n"
         + (f"Telegram: {username}\n" if username else "")
